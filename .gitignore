@@ -4,8 +4,35 @@ __pycache__/
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
 
 # Virtual environments
-.venv
 .venv/
+
+# Environment variables and secrets
+.env
+*.env
+!.env.example
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific runtime artifacts
+*.checkpoint.json
+failures.json
+output/
+*_extracted_*.xlsx
