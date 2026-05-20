@@ -16,7 +16,6 @@ repos:
         args: [--fix]
       - id: ruff-format
 
-
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v2.1.0
     hooks:
@@ -27,4 +26,6 @@ repos:
           - types-openpyxl
           - openai
           - tenacity
+          - pypdf
+          - rich
         args: [--strict]
