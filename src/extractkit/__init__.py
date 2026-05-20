@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from extractkit!")
+"""extractkit: LLM-powered structured extraction from PDFs to Excel."""
