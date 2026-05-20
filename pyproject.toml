@@ -36,7 +36,7 @@ Repository = "https://github.com/KasraAlizadeh/extractkit"
 Issues = "https://github.com/KasraAlizadeh/extractkit/issues"
 
 [project.scripts]
-extractkit = "extractkit.cli:app"
+extractkit = "extractkit.cli:main"
 
 [build-system]
 requires = ["hatchling"]

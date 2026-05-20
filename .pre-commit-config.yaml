@@ -28,4 +28,5 @@ repos:
           - tenacity
           - pypdf
           - rich
+          - typer
         args: [--strict]
