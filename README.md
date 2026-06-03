@@ -16,16 +16,16 @@ Built for systematic literature reviews and document-automation pipelines. `extr
 
 Systematic literature reviews are bottlenecked on a tedious step: reading dozens or hundreds of papers and copying the same handful of fields (year, methodology, sample size, KPIs) into a spreadsheet. `extractkit` automates that step for any research domain whose review template can be expressed as a set of Excel column headers.
 
-The first use case it was built for is thermal comfort / ASHRAE-55 / urban heat island research, but the schema is supplied at runtime, so the same pipeline works equally well for clinical trial extractions, due-diligence reviews, contract triage, or any other "PDF → schema-defined row" task.
+The first use case it was built for is thermal comfort / ASHRAE-55 / urban heat island research, but the schema is supplied at runtime, so the same pipeline works equally well for clinical trial extractions, due-diligence reviews, contract triage, or any other "PDF to schema-defined row" task.
 
 ## Highlights
 
 - **Schema-first.** Excel column headers *are* the extraction schema. Edit the template, the LLM follows.
 - **Two-pass extraction.** Pass 1 pulls structured fields with strict JSON-schema validation. Pass 2 produces summary fields. Different fields, different prompting styles.
 - **Resumable.** Atomic JSON checkpoint + atomic Excel writes. Kill the process at PDF #73 of 100, re-run, it picks up at #74. No re-billing for work already done.
-- **Per-document failure isolation.** One corrupted PDF doesn't abort the run; it's logged, recorded in the checkpoint, and the loop continues.
+- **Per-document failure isolation.** One corrupted PDF does not abort the run; it is logged, recorded in the checkpoint, and the loop continues.
 - **Cross-platform CLI.** Built with Typer; works on macOS, Linux, and Windows.
-- **Production-grade tooling.** `ruff` for lint + format, `mypy --strict` for types, `pytest` with coverage, `pre-commit` hooks, GitHub Actions CI on Python 3.12 and 3.13.
+- **Production-grade tooling.** Ruff for lint and format, mypy in strict mode for types, pytest with coverage, pre-commit hooks, and GitHub Actions CI on Python 3.12 and 3.13.
 
 ## Quickstart
 
@@ -58,45 +58,34 @@ Usage: extractkit [OPTIONS]
   Extract structured data from a folder of PDFs into an Excel workbook.
 
 Options:
-  -p, --pdfs        DIRECTORY  Folder containing the PDF articles to process.   [required]
+  -p, --pdfs        DIRECTORY  Folder containing the PDF articles to process.  [required]
   -t, --template    FILE       Excel template whose header row defines the schema.  [required]
   -o, --output      PATH       Where to write the filled workbook.  [required]
-  -c, --checkpoint  PATH       Checkpoint JSON path. Defaults to '.checkpoint.json'.
+  -c, --checkpoint  PATH       Checkpoint JSON path. Defaults to '<output>.checkpoint.json'.
   -s, --sheet       TEXT       Worksheet name to use. Defaults to the active sheet.
   -v, --verbose                Enable debug-level logging.
       --help                   Show this message and exit.
 ```
 
 ## How it works
-┌────────────────────┐
-│  ./papers/*.pdf    │
-└─────────┬──────────┘
-│  scan top-level folder, sorted
-▼
-┌────────────────────────────────────────────────────────┐
-│  for each PDF (sequential, resumable):                 │
-│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐   │
-│  │ pdf_reader   │→ │ llm_client  │→ │ excel_handler│   │
-│  │ pypdf → text │  │ OpenAI ×2:  │  │ atomic write │   │
-│  │              │  │  structured │  │ to .xlsx     │   │
-│  │              │  │  + synthesis│  │              │   │
-│  └──────────────┘  └─────────────┘  └──────────────┘   │
-│                                              │         │
-│                                              ▼         │
-│                                       ┌──────────────┐ │
-│                                       │  checkpoint  │ │
-│                                       │  (JSON, atomic)│
-│                                       └──────────────┘ │
-└────────────────────────────────────────────────────────┘
-│
-▼
-┌────────────────────┐
-│  results.xlsx      │
-└────────────────────┘
+
+```mermaid
+flowchart TD
+    A[./papers/*.pdf] -->|scan top-level folder, sorted| B
+    subgraph B[For each PDF — sequential, resumable]
+        direction LR
+        B1[pdf_reader<br/>pypdf → text] --> B2[llm_client<br/>OpenAI ×2:<br/>structured + synthesis]
+        B2 --> B3[excel_handler<br/>atomic write to .xlsx]
+        B3 --> B4[checkpoint<br/>atomic JSON]
+    end
+    B --> C[results.xlsx]
+```
 
 Every successful PDF appends one row to the output workbook and is marked done in the checkpoint. Failures are recorded but never abort the run.
 
 ## Project layout
+
+```text
 extractkit/
 ├── .github/workflows/ci.yml   # GitHub Actions: lint, type-check, test (3.12 & 3.13)
 ├── src/extractkit/
@@ -105,13 +94,14 @@ extractkit/
 │   ├── schemas.py             # Pydantic models — the 33-column schema
 │   ├── pdf_reader.py          # PDF → text (pypdf)
 │   ├── excel_handler.py       # Atomic incremental Excel writer (openpyxl)
-│   ├── llm_client.py          # OpenAI client w/ structured outputs + retries
+│   ├── llm_client.py          # OpenAI client with structured outputs + retries
 │   ├── extractor.py           # Orchestrator
 │   ├── checkpoint.py          # Atomic JSON checkpoint for resumability
 │   └── exceptions.py          # Custom exception hierarchy
 ├── tests/                     # 35 tests, ~71% coverage
 ├── pyproject.toml             # Single source of truth (deps, ruff, mypy, pytest)
 └── .pre-commit-config.yaml    # Pre-commit hooks
+```
 
 ## Development
 
@@ -131,20 +121,20 @@ The exact same commands run in CI on every push.
 
 ## Tech stack
 
-| Concern          | Choice                                   |
-| ---------------- | ---------------------------------------- |
-| Language         | Python 3.12+                             |
-| Package manager  | [uv](https://docs.astral.sh/uv/)         |
-| CLI              | [Typer](https://typer.tiangolo.com/)     |
-| Validation       | [Pydantic v2](https://docs.pydantic.dev/) + pydantic-settings |
-| LLM              | OpenAI structured outputs (`beta.chat.completions.parse`) |
-| Retries          | [tenacity](https://tenacity.readthedocs.io/) — exponential backoff |
-| PDF              | [pypdf](https://pypdf.readthedocs.io/)   |
-| Excel            | [openpyxl](https://openpyxl.readthedocs.io/) |
-| Lint + format    | [Ruff](https://docs.astral.sh/ruff/)     |
-| Type checking    | [mypy](https://mypy-lang.org/) (`--strict`) |
-| Testing          | [pytest](https://docs.pytest.org/) + coverage + mocking |
-| CI               | GitHub Actions, matrix on 3.12 & 3.13    |
+| Concern         | Choice                                                              |
+| --------------- | ------------------------------------------------------------------- |
+| Language        | Python 3.12+                                                        |
+| Package manager | [uv](https://docs.astral.sh/uv/)                                    |
+| CLI             | [Typer](https://typer.tiangolo.com/)                                |
+| Validation      | [Pydantic v2](https://docs.pydantic.dev/) + pydantic-settings       |
+| LLM             | OpenAI structured outputs (`beta.chat.completions.parse`)           |
+| Retries         | [tenacity](https://tenacity.readthedocs.io/) — exponential backoff  |
+| PDF             | [pypdf](https://pypdf.readthedocs.io/)                              |
+| Excel           | [openpyxl](https://openpyxl.readthedocs.io/)                        |
+| Lint and format | [Ruff](https://docs.astral.sh/ruff/)                                |
+| Type checking   | [mypy](https://mypy-lang.org/) (strict mode)                        |
+| Testing         | [pytest](https://docs.pytest.org/) + coverage + mocking             |
+| CI              | GitHub Actions, matrix on Python 3.12 and 3.13                      |
 
 ## License
 
