@@ -93,6 +93,7 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 files = ["src", "tests"]
+mypy_path = "src"
 
 [[tool.mypy.overrides]]
 module = ["openpyxl.*"]
