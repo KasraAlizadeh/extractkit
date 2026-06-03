@@ -29,4 +29,5 @@ repos:
           - pypdf
           - rich
           - typer
+          - pytest
         args: [--strict]

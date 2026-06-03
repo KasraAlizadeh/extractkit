@@ -1,1 +1,1 @@
-"""extractkit: LLM-powered structured extraction from PDFs to Excel."""
+"""extractkit: LLM-powered structured data extraction from PDFs to Excel."""
