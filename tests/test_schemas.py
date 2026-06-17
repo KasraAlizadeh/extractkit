@@ -13,11 +13,11 @@ from extractkit.schemas import (
 
 
 def test_excel_columns_has_expected_count() -> None:
-    assert len(EXCEL_COLUMNS) == 33
+    assert len(EXCEL_COLUMNS) == 34
 
 
 def test_column_to_field_has_expected_count() -> None:
-    assert len(COLUMN_TO_FIELD) == 33
+    assert len(COLUMN_TO_FIELD) == 34
 
 
 def test_every_excel_column_has_a_field_mapping() -> None:

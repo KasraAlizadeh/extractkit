@@ -4,11 +4,11 @@ This module is the only place in the package that talks to OpenAI. It
 exposes a single :class:`LLMClient` with two methods that mirror the
 two-pass extraction strategy:
 
-* :meth:`LLMClient.extract_structured` — pass 1: pull the 27 factual
-  fields with JSON-schema validation, so the response is guaranteed to
-  match :class:`extractkit.schemas.StructuredFields`.
+* :meth:`LLMClient.extract_structured` — pass 1: pull the structured
+  factual fields with JSON-schema validation, so the response is
+  guaranteed to match :class:`extractkit.schemas.StructuredFields`.
 * :meth:`LLMClient.extract_synthesis` — pass 2: ask the model to write
-  the 6 summary fields, again returned as a validated Pydantic model.
+  the summary fields, again returned as a validated Pydantic model.
 
 Transient failures (rate limits, timeouts, server errors) are retried
 with exponential backoff via :mod:`tenacity`; permanent failures (bad
@@ -39,26 +39,77 @@ from extractkit.schemas import StructuredFields, SynthesisFields
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
-# A short, domain-aware system prompt steers the model toward the
-# vocabulary used in thermal-comfort research (clo/met, PMV/PPD, UTCI,
-# Köppen-Geiger, etc.). Without this, generic prompts tend to produce
-# vaguer answers for specialised fields like "Clothing Level".
+# Domain-aware system prompt that defines the extraction task in the
+# user's own words and supplies the vocabulary the model needs to
+# recognise indirect mentions of clo, met, PMV, UTCI, Köppen-Geiger
+# climates, and the four comfort subjects.
 _SYSTEM_PROMPT_BASE: Final[str] = (
-    "You are an expert research assistant specialising in thermal comfort, "
-    "ASHRAE-55, and urban heat island studies. You extract information "
-    "from academic articles precisely and conservatively. "
-    "When a field is not stated in the article, return an empty string "
-    "rather than guessing. Use the vocabulary of the field where it "
-    "applies (clo values for clothing, met values for activity, PMV/PPD "
-    "and UTCI for thermal indices, Köppen-Geiger codes for climate)."
+    "You are an expert research assistant for systematic literature reviews "
+    "in environmental and human comfort research, with deep knowledge of "
+    "thermal comfort, ASHRAE-55, urban heat island studies, visual comfort, "
+    "acoustic comfort, and outdoor air quality.\n\n"
+    "TASK\n"
+    "Given an academic article, extract the requested fields and produce "
+    "the requested summaries with high accuracy.\n\n"
+    "EXTRACTION RULES\n"
+    "1. Read the WHOLE article carefully — abstract, methods, results, "
+    "discussion, conclusion, and figure captions — before extracting any "
+    "field. Relevant information is often distributed across sections.\n"
+    "2. Extract information even when phrased indirectly. For example, "
+    "'participants wore summer attire' implies a clothing level of ~0.5 clo. "
+    "'Subjects performed light office work' implies ~1.2 met.\n"
+    "3. For numerical fields (clo, met, PMV, UTCI, Ta, RH, etc.), include "
+    "both the value and its unit when stated (e.g. '0.6 clo', '1.2 met', "
+    "'Ta = 28°C', 'PMV from -0.5 to +1.0').\n"
+    "4. For location fields (Country, City, Climate), look in the methods "
+    "section, study-area description, and figure captions. Climate may be "
+    "stated as a Köppen-Geiger code or descriptively — record what is given.\n"
+    "5. For Subjects of Study, ONLY use these four labels: 'Visual Comfort', "
+    "'Acoustic Comfort', 'Outdoor Air Quality', 'Thermal Comfort'. Choose "
+    "all that apply, comma-separated. This describes the research topic, "
+    "NOT the participants.\n"
+    "6. For author/year/journal/DOI, check the title page, header, footer, "
+    "and the reference itself.\n"
+    "7. KPIs are calculated comfort indices (PMV, PPD, UTCI, SET*, PET, "
+    "WBGT). They are calculation outputs, not raw measurements like Ta.\n"
+    "8. When listing multiple items (authors, keywords, variables, KPIs), "
+    "separate with commas. Do not use 'and' or bullet points.\n"
+    "9. Preserve original spellings of names, places, and technical terms.\n"
+    "10. Return EXACTLY the string 'N/A' (no quotes, no other variant like "
+    "'not available' or 'unknown') when the article does not mention a field "
+    "anywhere. Do not guess or fabricate.\n\n"
+    "DOMAIN VOCABULARY YOU SHOULD RECOGNIZE\n"
+    "- Comfort indices / KPIs: PMV, PPD, UTCI, SET*, PET, WBGT, OUT_SET*, "
+    "TSV (Thermal Sensation Vote), TCV (Thermal Comfort Vote).\n"
+    "- Clothing: clo value, Icl, clothing insulation, garment ensemble.\n"
+    "- Activity / metabolic rate: met value, M, activity level.\n"
+    "- Microclimate variables: Ta (air temperature), Tmrt (mean radiant "
+    "temperature), RH (relative humidity), Va (air velocity), Tg (globe "
+    "temperature), SR (solar radiation).\n"
+    "- Climate zones: Köppen-Geiger codes (Af, Am, Aw, BWh, BWk, BSh, BSk, "
+    "Cfa, Cfb, Csa, Csb, Cwa, Dfa, Dfb, etc.).\n"
+    "- Study designs: field study, climate chamber, laboratory, questionnaire "
+    "survey, simulation (ENVI-met, RayMan, SOLWEIG, CFD), longitudinal, "
+    "cross-sectional, transversal.\n"
+    "- Urban cooling: street trees, green roofs, cool pavements, water "
+    "features, urban geometry, high-albedo surfaces, shading devices.\n"
+    "- Common software: ENVI-met, RayMan, SOLWEIG, Ladybug, ANSYS Fluent, "
+    "OpenFOAM, SPSS, R, MATLAB, Python."
 )
 
 
 _STRUCTURED_USER_PROMPT: Final[str] = (
-    "Extract the following factual fields from the academic article below. "
-    "Return only what the article explicitly states. Leave fields empty "
-    "when the article does not provide the information.\n\n"
-    "Article text:\n"
+    "Extract the requested factual fields from the academic article below.\n\n"
+    "INSTRUCTIONS\n"
+    "- Search the WHOLE article for each field, not just one section.\n"
+    "- Extract values even when phrased indirectly (see the system prompt).\n"
+    "- For numerical values, include units (e.g. '0.5 clo', '25°C').\n"
+    "- For lists, separate items with commas.\n"
+    "- For the 'Subjects of Study' field, use ONLY these labels (choose all "
+    "that apply): Visual Comfort, Acoustic Comfort, Outdoor Air Quality, "
+    "Thermal Comfort.\n"
+    "- Return exactly 'N/A' when a field is not mentioned in the article.\n\n"
+    "ARTICLE TEXT\n"
     "---\n"
     "{article_text}\n"
     "---"
@@ -67,9 +118,23 @@ _STRUCTURED_USER_PROMPT: Final[str] = (
 
 _SYNTHESIS_USER_PROMPT: Final[str] = (
     "Read the academic article below and produce the requested summary "
-    "fields. Each summary should be one paragraph, concise and faithful "
-    "to the article. Do not invent results that are not in the text.\n\n"
-    "Article text:\n"
+    "fields. Each summary should be ONE concise paragraph (3-6 sentences), "
+    "written in clear scholarly prose and faithful to what the article "
+    "actually says.\n\n"
+    "INSTRUCTIONS\n"
+    "- Base every claim on content explicitly present in the article.\n"
+    "- Do not invent results, statistics, or conclusions.\n"
+    "- 'Research Questions' — what the authors set out to answer.\n"
+    "- 'Key Goals' — what the authors aimed to achieve.\n"
+    "- 'Methodology' — study design, participants, instruments, and "
+    "analysis approach in one paragraph.\n"
+    "- 'Notes' — limitations, caveats, sample restrictions, future work.\n"
+    "- 'Brief Double Click to See All' — one-paragraph executive summary "
+    "covering scope, approach, and headline findings.\n"
+    "- 'G-M-R Brief' — a single flowing paragraph stating (a) the GOALS, "
+    "(b) the METHODOLOGY, and (c) the RESULTS, in that order.\n"
+    "- Return exactly 'N/A' when a field cannot be derived from the article.\n\n"
+    "ARTICLE TEXT\n"
     "---\n"
     "{article_text}\n"
     "---"
@@ -123,7 +188,7 @@ class LLMClient:
         )
 
     def extract_structured(self, article_text: str) -> StructuredFields:
-        """Run pass 1: extract the 27 factual fields.
+        """Run pass 1: extract the structured factual fields.
 
         Args:
             article_text: Full text of the article (any length; long
@@ -131,7 +196,7 @@ class LLMClient:
 
         Returns:
             A populated :class:`StructuredFields` instance. Fields the
-            article does not mention come back as empty strings.
+            article does not mention come back as the string 'N/A'.
 
         Raises:
             LLMError: If the API call fails after all retries, or if the
@@ -144,7 +209,7 @@ class LLMClient:
         )
 
     def extract_synthesis(self, article_text: str) -> SynthesisFields:
-        """Run pass 2: produce the 6 summary fields."""
+        """Run pass 2: produce the summary fields."""
         return self._call_with_schema(
             article_text=article_text,
             user_prompt_template=_SYNTHESIS_USER_PROMPT,
