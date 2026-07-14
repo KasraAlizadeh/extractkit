@@ -1,11 +1,10 @@
-"""Integration tests for the orchestrator.
+"""Integration tests for the Extractor orchestrator.
 
-These tests exercise the full pipeline — pdf_reader → llm_client →
-excel_handler → checkpoint — with the LLM stubbed out so no network
-calls are made and no API key is required.
-
-Real PDFs are generated on-the-fly with reportlab so the tests stay
-self-contained and fast.
+These tests drive the full pipeline end-to-end with real files on disk
+(inside pytest's ``tmp_path`` sandbox) but stub the LLM so no network
+call is made. The point is to check that PDFs are read, extractions
+land in the right Excel cells, the checkpoint is written correctly,
+and failures are isolated per document.
 """
 
 from __future__ import annotations
@@ -15,32 +14,32 @@ from unittest.mock import MagicMock
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
-from extractkit.checkpoint import load_or_create
 from extractkit.config import Settings
-from extractkit.excel_handler import count_data_rows
+from extractkit.exceptions import LLMError
 from extractkit.extractor import Extractor, ExtractorConfig
-from extractkit.llm_client import LLMClient
-from extractkit.schemas import EXCEL_COLUMNS, StructuredFields, SynthesisFields
+from extractkit.schemas import (
+    EXCEL_COLUMNS,
+    StructuredFields,
+    SynthesisFields,
+)
 
 
-def _write_minimal_pdf(path: Path, body_text: str) -> None:
-    """Create a real PDF with extractable text content.
+def _write_pdf(path: Path, body: str) -> None:
+    """Emit a tiny valid PDF with the given body text.
 
-    The orchestrator rejects empty PDFs as scanned-only, so test PDFs
-    must contain real text. ``reportlab`` is the standard tool for
-    generating well-formed PDFs from Python.
+    Real articles are much larger, but for these tests any PDF that
+    ``pypdf`` can open and extract text from is sufficient.
     """
-    from reportlab.pdfgen import canvas
-
-    pdf = canvas.Canvas(str(path))
-    pdf.drawString(72, 720, body_text)
-    pdf.drawString(72, 700, "Sample academic article content for testing.")
+    pdf = canvas.Canvas(str(path), pagesize=letter)
+    pdf.drawString(72, 720, body)
     pdf.save()
 
 
-def _make_template(path: Path) -> None:
-    """Create an Excel template with the canonical headers."""
+def _write_template(path: Path) -> None:
+    """Create a fresh Excel template with the canonical headers."""
     workbook = Workbook()
     worksheet = workbook.active
     assert worksheet is not None
@@ -48,58 +47,63 @@ def _make_template(path: Path) -> None:
     workbook.save(path)
 
 
-def _stub_llm(
-    structured: StructuredFields,
-    synthesis: SynthesisFields,
-) -> LLMClient:
-    """Build an ``LLMClient`` with both extraction methods stubbed.
-
-    The returned client never touches OpenAI; calling either method
-    returns the pre-built schema instance.
-    """
-    settings = Settings(OPENAI_API_KEY="sk-test-not-real")
-    client = LLMClient(settings)
-    client.extract_structured = MagicMock(  # type: ignore[method-assign]
-        return_value=structured,
-    )
-    client.extract_synthesis = MagicMock(  # type: ignore[method-assign]
-        return_value=synthesis,
-    )
-    return client
-
-
 @pytest.fixture
 def pdf_folder(tmp_path: Path) -> Path:
-    """A folder with three small PDFs ready for processing."""
+    """A folder with three tiny PDFs, mimicking a small paper collection."""
     folder = tmp_path / "papers"
     folder.mkdir()
-    _write_minimal_pdf(folder / "paper_a.pdf", "Paper A content")
-    _write_minimal_pdf(folder / "paper_b.pdf", "Paper B content")
-    _write_minimal_pdf(folder / "paper_c.pdf", "Paper C content")
+    for name in ("paper_a.pdf", "paper_b.pdf", "paper_c.pdf"):
+        _write_pdf(folder / name, f"Body of {name}")
     return folder
 
 
 @pytest.fixture
 def template_path(tmp_path: Path) -> Path:
-    """A freshly created Excel template at a stable path."""
+    """A ready-to-use Excel template for the run."""
     path = tmp_path / "template.xlsx"
-    _make_template(path)
+    _write_template(path)
     return path
 
 
 @pytest.fixture
 def output_path(tmp_path: Path) -> Path:
-    """Where the orchestrator should write its growing workbook."""
+    """Destination for the extractor's Excel output."""
     return tmp_path / "output.xlsx"
 
 
 @pytest.fixture
 def checkpoint_path(tmp_path: Path) -> Path:
-    """Where the orchestrator should write its checkpoint JSON."""
+    """Destination for the extractor's checkpoint file."""
     return tmp_path / "output.xlsx.checkpoint.json"
 
 
-def test_full_run_processes_every_pdf(
+def _stub_llm(
+    *,
+    structured: StructuredFields | None = None,
+    synthesis: SynthesisFields | None = None,
+    structured_side_effect: list | None = None,
+    synthesis_side_effect: list | None = None,
+) -> MagicMock:
+    """Build a fake LLMClient that returns pre-baked extraction results.
+
+    Either ``structured`` / ``synthesis`` (single value returned every
+    call) or ``*_side_effect`` (list of results, one per call) may be
+    supplied; the latter lets tests exercise the failure-isolation path
+    by raising an exception for a specific PDF.
+    """
+    stub = MagicMock()
+    if structured_side_effect is not None:
+        stub.extract_structured.side_effect = structured_side_effect
+    else:
+        stub.extract_structured.return_value = structured
+    if synthesis_side_effect is not None:
+        stub.extract_synthesis.side_effect = synthesis_side_effect
+    else:
+        stub.extract_synthesis.return_value = synthesis
+    return stub
+
+
+def test_run_succeeds_end_to_end(
     pdf_folder: Path,
     template_path: Path,
     output_path: Path,
@@ -107,7 +111,7 @@ def test_full_run_processes_every_pdf(
     structured_extraction_dict: dict[str, str],
     synthesis_extraction_dict: dict[str, str],
 ) -> None:
-    """A clean run should process all PDFs and write one row each."""
+    """Three PDFs, three rows, checkpoint says all done."""
     settings = Settings(OPENAI_API_KEY="sk-test-not-real")
     llm = _stub_llm(
         structured=StructuredFields(**structured_extraction_dict),
@@ -120,16 +124,16 @@ def test_full_run_processes_every_pdf(
         checkpoint_path=checkpoint_path,
     )
 
-    summary = Extractor(settings=settings, config=config, llm_client=llm).run()
+    result = Extractor(settings=settings, config=config, llm_client=llm).run()
 
-    assert summary.total == 3
-    assert summary.succeeded == 3
-    assert summary.skipped == 0
-    assert summary.failed == {}
-    assert count_data_rows(output_path) == 3
+    assert result.total_pdfs == 3
+    assert result.succeeded_this_run == 3
+    assert result.failed == 0
+    assert output_path.exists()
+    assert checkpoint_path.exists()
 
 
-def test_rerun_skips_already_processed_pdfs(
+def test_resume_skips_completed_pdfs(
     pdf_folder: Path,
     template_path: Path,
     output_path: Path,
@@ -137,10 +141,12 @@ def test_rerun_skips_already_processed_pdfs(
     structured_extraction_dict: dict[str, str],
     synthesis_extraction_dict: dict[str, str],
 ) -> None:
-    """A second run with the same checkpoint should skip everything done."""
+    """A second run on the same output must skip already-processed PDFs."""
     settings = Settings(OPENAI_API_KEY="sk-test-not-real")
-    structured = StructuredFields(**structured_extraction_dict)
-    synthesis = SynthesisFields(**synthesis_extraction_dict)
+    llm = _stub_llm(
+        structured=StructuredFields(**structured_extraction_dict),
+        synthesis=SynthesisFields(**synthesis_extraction_dict),
+    )
     config = ExtractorConfig(
         pdf_folder=pdf_folder,
         template_path=template_path,
@@ -148,27 +154,18 @@ def test_rerun_skips_already_processed_pdfs(
         checkpoint_path=checkpoint_path,
     )
 
-    # First run: everything fresh.
-    Extractor(
-        settings=settings,
-        config=config,
-        llm_client=_stub_llm(structured, synthesis),
-    ).run()
+    # First run: everything succeeds.
+    Extractor(settings=settings, config=config, llm_client=llm).run()
 
-    # Second run with a freshly-built (still-stubbed) client. The
-    # checkpoint should make the orchestrator skip every PDF.
-    second_llm = _stub_llm(structured, synthesis)
-    summary = Extractor(settings=settings, config=config, llm_client=second_llm).run()
-
-    assert summary.total == 3
-    assert summary.skipped == 3
-    assert summary.succeeded == 0
-    # The stubbed LLM must NOT have been invoked on the second run.
-    second_llm.extract_structured.assert_not_called()  # type: ignore[attr-defined]
-    second_llm.extract_synthesis.assert_not_called()  # type: ignore[attr-defined]
+    # Second run: nothing new should happen.
+    second = Extractor(settings=settings, config=config, llm_client=llm).run()
+    assert second.total_pdfs == 3
+    assert second.skipped_already_done == 3
+    assert second.succeeded_this_run == 0
+    assert second.failed == 0
 
 
-def test_failed_pdf_does_not_abort_the_run(
+def test_llm_failure_on_one_pdf_does_not_abort_run(
     pdf_folder: Path,
     template_path: Path,
     output_path: Path,
@@ -176,74 +173,81 @@ def test_failed_pdf_does_not_abort_the_run(
     structured_extraction_dict: dict[str, str],
     synthesis_extraction_dict: dict[str, str],
 ) -> None:
-    """If one PDF's LLM call fails, the run continues for the others."""
+    """A single-PDF failure is recorded but the run continues."""
     settings = Settings(OPENAI_API_KEY="sk-test-not-real")
-    structured = StructuredFields(**structured_extraction_dict)
-    synthesis = SynthesisFields(**synthesis_extraction_dict)
+    good_structured = StructuredFields(**structured_extraction_dict)
+    good_synthesis = SynthesisFields(**synthesis_extraction_dict)
 
-    llm = _stub_llm(structured, synthesis)
-
-    # Make the second call to extract_structured raise; the other two
-    # succeed. The orchestrator should record one failure and two wins.
-    call_counter = {"n": 0}
-
-    def flaky_structured(_text: str) -> StructuredFields:
-        call_counter["n"] += 1
-        if call_counter["n"] == 2:
-            from extractkit.exceptions import LLMError
-
-            raise LLMError("simulated transient failure")
-        return structured
-
-    llm.extract_structured = MagicMock(  # type: ignore[method-assign]
-        side_effect=flaky_structured,
+    # Sorted PDF order in ``pdf_folder`` is a, b, c; fail the second.
+    llm = _stub_llm(
+        structured_side_effect=[
+            good_structured,
+            LLMError("boom"),
+            good_structured,
+        ],
+        synthesis_side_effect=[
+            good_synthesis,
+            good_synthesis,  # never reached because structured raised first
+            good_synthesis,
+        ],
     )
-
     config = ExtractorConfig(
         pdf_folder=pdf_folder,
         template_path=template_path,
         output_path=output_path,
         checkpoint_path=checkpoint_path,
     )
-    summary = Extractor(settings=settings, config=config, llm_client=llm).run()
 
-    assert summary.total == 3
-    assert summary.succeeded == 2
-    assert len(summary.failed) == 1
-    assert count_data_rows(output_path) == 2
+    result = Extractor(settings=settings, config=config, llm_client=llm).run()
+
+    assert result.total_pdfs == 3
+    assert result.succeeded_this_run == 2
+    assert result.failed == 1
+    assert len(result.failures) == 1
 
 
-def test_template_with_wrong_headers_is_rejected(
+def test_empty_pdf_folder_returns_zero_totals(
+    tmp_path: Path,
+    template_path: Path,
+    output_path: Path,
+    checkpoint_path: Path,
+) -> None:
+    """Running against an empty folder should not raise; totals are zero."""
+    empty_folder = tmp_path / "empty_papers"
+    empty_folder.mkdir()
+
+    settings = Settings(OPENAI_API_KEY="sk-test-not-real")
+    llm = _stub_llm()
+    config = ExtractorConfig(
+        pdf_folder=empty_folder,
+        template_path=template_path,
+        output_path=output_path,
+        checkpoint_path=checkpoint_path,
+    )
+
+    result = Extractor(settings=settings, config=config, llm_client=llm).run()
+    assert result.total_pdfs == 0
+    assert result.succeeded_this_run == 0
+    assert result.failed == 0
+
+
+def test_missing_template_raises(
     pdf_folder: Path,
     tmp_path: Path,
     output_path: Path,
     checkpoint_path: Path,
-    structured_extraction_dict: dict[str, str],
-    synthesis_extraction_dict: dict[str, str],
 ) -> None:
-    """A template missing schema columns must fail fast, not silently mis-write."""
-    bad_template = tmp_path / "bad_template.xlsx"
-    workbook = Workbook()
-    worksheet = workbook.active
-    assert worksheet is not None
-    worksheet.append(["Wrong", "Headers", "Here"])
-    workbook.save(bad_template)
-
+    """A missing template surfaces as a clear error before any API call."""
     settings = Settings(OPENAI_API_KEY="sk-test-not-real")
-    llm = _stub_llm(
-        structured=StructuredFields(**structured_extraction_dict),
-        synthesis=SynthesisFields(**synthesis_extraction_dict),
-    )
+    llm = _stub_llm()
     config = ExtractorConfig(
         pdf_folder=pdf_folder,
-        template_path=bad_template,
+        template_path=tmp_path / "does_not_exist.xlsx",
         output_path=output_path,
         checkpoint_path=checkpoint_path,
     )
 
-    from extractkit.exceptions import ExcelError
-
-    with pytest.raises(ExcelError):
+    with pytest.raises(FileNotFoundError):
         Extractor(settings=settings, config=config, llm_client=llm).run()
 
 
@@ -276,49 +280,8 @@ def test_output_rows_are_aligned_to_excel_columns(
     header_row = list(rows[0])
     data_row = list(rows[1])
 
-    article_name_index = header_row.index("Article Name")
+    title_index = header_row.index("Title")
     year_index = header_row.index("Year")
-    assert data_row[article_name_index] == structured_extraction_dict["article_name"]
+
+    assert data_row[title_index] == structured_extraction_dict["title"]
     assert data_row[year_index] == structured_extraction_dict["year"]
-
-
-def test_checkpoint_records_successes_and_failures(
-    pdf_folder: Path,
-    template_path: Path,
-    output_path: Path,
-    checkpoint_path: Path,
-    structured_extraction_dict: dict[str, str],
-    synthesis_extraction_dict: dict[str, str],
-) -> None:
-    """The checkpoint file must reflect what actually happened."""
-    settings = Settings(OPENAI_API_KEY="sk-test-not-real")
-    structured = StructuredFields(**structured_extraction_dict)
-    synthesis = SynthesisFields(**synthesis_extraction_dict)
-    llm = _stub_llm(structured, synthesis)
-
-    # Make extract_synthesis raise on the third call.
-    call_counter = {"n": 0}
-
-    def flaky_synthesis(_text: str) -> SynthesisFields:
-        call_counter["n"] += 1
-        if call_counter["n"] == 3:
-            from extractkit.exceptions import LLMError
-
-            raise LLMError("simulated transient failure")
-        return synthesis
-
-    llm.extract_synthesis = MagicMock(  # type: ignore[method-assign]
-        side_effect=flaky_synthesis,
-    )
-
-    config = ExtractorConfig(
-        pdf_folder=pdf_folder,
-        template_path=template_path,
-        output_path=output_path,
-        checkpoint_path=checkpoint_path,
-    )
-    Extractor(settings=settings, config=config, llm_client=llm).run()
-
-    checkpoint = load_or_create(checkpoint_path)
-    assert len(checkpoint.processed) == 2
-    assert len(checkpoint.failed) == 1

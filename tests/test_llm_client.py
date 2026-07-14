@@ -1,10 +1,4 @@
-"""Tests for the OpenAI client wrapper.
-
-Mocking strategy: we patch the OpenAI client at the SDK boundary so the
-real network call is never made. The fakes return objects shaped like
-what ``openai.beta.chat.completions.parse`` returns at runtime, just
-enough for ``LLMClient`` to be exercised end-to-end.
-"""
+"""Tests for the OpenAI client wrapper."""
 
 from __future__ import annotations
 
@@ -17,16 +11,23 @@ from openai import APIConnectionError, APITimeoutError, RateLimitError
 from extractkit.config import Settings
 from extractkit.exceptions import LLMError
 from extractkit.llm_client import LLMClient
-from extractkit.schemas import StructuredFields, SynthesisFields
+from extractkit.schemas import (
+    BibliographicFields,
+    CalculatedIndexesFields,
+    ClassificationFields,
+    MeasurementsFields,
+    ModelingFields,
+    ParticipantsFields,
+    ReviewFields,
+    StrategiesFields,
+    StructuredFields,
+    StudyContextFields,
+    SubjectiveComfortFields,
+    SynthesisFields,
+)
 
 
 def _fake_response(parsed_object: Any) -> MagicMock:
-    """Build a stand-in for ``client.beta.chat.completions.parse``'s return.
-
-    The real return type is a ``ParsedChatCompletion``; for our purposes
-    only ``.choices[0].message.parsed`` matters, so the fake exposes
-    just that path.
-    """
     message = MagicMock()
     message.parsed = parsed_object
     choice = MagicMock()
@@ -38,7 +39,6 @@ def _fake_response(parsed_object: Any) -> MagicMock:
 
 @pytest.fixture
 def settings() -> Settings:
-    """Minimal valid settings with a placeholder API key."""
     return Settings(
         OPENAI_API_KEY="sk-test-not-real",
         model="gpt-4o-mini",
@@ -52,18 +52,78 @@ def test_extract_structured_returns_populated_model(
     structured_extraction_dict: dict[str, str],
     fake_article_text: str,
 ) -> None:
-    """A successful structured-pass call returns a parsed Pydantic model."""
+    d = structured_extraction_dict
+    batch_responses = [
+        ClassificationFields(
+            article_classification=d["article_classification"],
+            main_focus=d["main_focus"],
+        ),
+        BibliographicFields(
+            title=d["title"],
+            authors=d["authors"],
+            year=d["year"],
+            journal=d["journal"],
+            doi=d["doi"],
+        ),
+        StudyContextFields(
+            country=d["country"],
+            city=d["city"],
+            climate=d["climate"],
+            seasons=d["seasons"],
+            urban_space_types=d["urban_space_types"],
+        ),
+        ParticipantsFields(
+            age=d["age"],
+            gender=d["gender"],
+            ethnicity=d["ethnicity"],
+            clothing_level=d["clothing_level"],
+            activity_during_exposure=d["activity_during_exposure"],
+            activity_before_exposure=d["activity_before_exposure"],
+        ),
+        MeasurementsFields(
+            variables_quantitative=d["variables_quantitative"],
+            variables_qualitative=d["variables_qualitative"],
+        ),
+        SubjectiveComfortFields(
+            questionnaire_extent=d["questionnaire_extent"],
+            survey_time=d["survey_time"],
+            questionnaire_questions=d["questionnaire_questions"],
+        ),
+        CalculatedIndexesFields(
+            calculated_indexes=d["calculated_indexes"],
+        ),
+        StrategiesFields(
+            urban_cooling=d["urban_cooling"],
+            personal_cooling=d["personal_cooling"],
+            urban_heating=d["urban_heating"],
+            personal_heating=d["personal_heating"],
+        ),
+        ModelingFields(
+            modeling_simulation=d["modeling_simulation"],
+        ),
+        ReviewFields(
+            review_scope=d["review_scope"],
+            number_of_studies_reviewed=d["number_of_studies_reviewed"],
+            themes_categories=d["themes_categories"],
+            methods_compared=d["methods_compared"],
+            gaps_identified=d["gaps_identified"],
+            conclusions=d["conclusions"],
+        ),
+    ]
+
     client = LLMClient(settings)
-    expected = StructuredFields(**structured_extraction_dict)
     client._client.beta.chat.completions.parse = MagicMock(  # type: ignore[method-assign]
-        return_value=_fake_response(expected),
+        side_effect=[_fake_response(r) for r in batch_responses],
     )
 
     result = client.extract_structured(fake_article_text)
 
     assert isinstance(result, StructuredFields)
-    assert result.article_name == structured_extraction_dict["article_name"]
-    assert result.year == structured_extraction_dict["year"]
+    assert result.title == d["title"]
+    assert result.article_classification == d["article_classification"]
+    assert result.main_focus == d["main_focus"]
+    assert result.doi == d["doi"]
+    assert result.calculated_indexes == d["calculated_indexes"]
 
 
 def test_extract_synthesis_returns_populated_model(
@@ -71,7 +131,6 @@ def test_extract_synthesis_returns_populated_model(
     synthesis_extraction_dict: dict[str, str],
     fake_article_text: str,
 ) -> None:
-    """A successful synthesis-pass call returns a parsed Pydantic model."""
     client = LLMClient(settings)
     expected = SynthesisFields(**synthesis_extraction_dict)
     client._client.beta.chat.completions.parse = MagicMock(  # type: ignore[method-assign]
@@ -82,10 +141,10 @@ def test_extract_synthesis_returns_populated_model(
 
     assert isinstance(result, SynthesisFields)
     assert result.methodology == synthesis_extraction_dict["methodology"]
+    assert result.gmr_brief == synthesis_extraction_dict["gmr_brief"]
 
 
 def test_none_parsed_raises_llm_error(settings: Settings, fake_article_text: str) -> None:
-    """If OpenAI returns no parsed object, surface a clear LLMError."""
     client = LLMClient(settings)
     client._client.beta.chat.completions.parse = MagicMock(  # type: ignore[method-assign]
         return_value=_fake_response(None),
@@ -98,7 +157,6 @@ def test_none_parsed_raises_llm_error(settings: Settings, fake_article_text: str
 def test_rate_limit_is_retried_and_eventually_raises(
     settings: Settings, fake_article_text: str
 ) -> None:
-    """Retries happen, but a persistent rate limit still surfaces as LLMError."""
     client = LLMClient(settings)
     rate_limit = RateLimitError(
         message="rate limited",
@@ -111,13 +169,10 @@ def test_rate_limit_is_retried_and_eventually_raises(
     with pytest.raises(LLMError):
         client.extract_structured(fake_article_text)
 
-    # Tenacity is configured for up to 5 attempts; we just confirm it
-    # was called more than once, proving retries happened.
     assert parse_mock.call_count > 1
 
 
 def test_timeout_is_retried(settings: Settings, fake_article_text: str) -> None:
-    """Timeouts are transient and should trigger retries."""
     client = LLMClient(settings)
     timeout = APITimeoutError(request=MagicMock())
     parse_mock = MagicMock(side_effect=timeout)
@@ -130,7 +185,6 @@ def test_timeout_is_retried(settings: Settings, fake_article_text: str) -> None:
 
 
 def test_connection_error_is_retried(settings: Settings, fake_article_text: str) -> None:
-    """Network errors are transient and should trigger retries."""
     client = LLMClient(settings)
     conn_err = APIConnectionError(request=MagicMock())
     parse_mock = MagicMock(side_effect=conn_err)

@@ -1,271 +1,408 @@
-"""Extraction schemas for systematic literature reviews.
+"""Extraction schemas for outdoor environmental comfort literature reviews.
 
-The Excel columns are modelled as several Pydantic classes:
-
-* :class:`BibliographicFields`, :class:`StudyContextFields`,
-  :class:`ParticipantsFields`, :class:`MeasurementsFields`,
-  :class:`StrategiesFields`, and :class:`ToolingFields` are extracted in
-  multiple focused passes, so the LLM can give each topic its full
-  attention rather than juggling 28 fields at once.
-* :class:`SynthesisFields` covers the free-form summary fields produced
-  in a separate pass.
-* :class:`StructuredFields` is the merged result of all batched passes,
-  kept as the single object the orchestrator and tests consume.
+The Excel columns are modelled as several Pydantic classes, one per
+extraction batch. Splitting the schema this way lets us make focused
+API calls per topic area — one for identifiers, one for participants,
+one for measurements, and so on — which produces markedly more complete
+extractions than a single 39-field call.
 
 Field descriptions are sent to the LLM as part of the JSON schema, so
-they double as field-specific extraction instructions.
+they double as field-specific extraction instructions. The system prompt
+in :mod:`extractkit.llm_client` supplies the wider extraction contract
+(NA / UNCERTAIN / MULTIPLE labels, pipe separators, evidence priority,
+study-type sensitivity).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# Placeholder used when a value is not present in the article.
-NOT_AVAILABLE: str = "N/A"
+# Placeholder used when a value is not present in the article. The prompt
+# also allows the LLM to return 'UNCERTAIN' (ambiguous / contradictory) or
+# 'MULTIPLE' (many values, no clear primary) — both are valid values for
+# any field.
+NOT_AVAILABLE: str = "NA"
 
 
-class BibliographicFields(BaseModel):
-    """Pass 1a — basic identifiers."""
+class ClassificationFields(BaseModel):
+    """Group A part 1 — article classification and main focus."""
 
     model_config = ConfigDict(extra="forbid")
 
-    article_name: str = Field(
-        default=NOT_AVAILABLE,
-        description=("Full title of the article exactly as printed. If not stated, return 'N/A'."),
-    )
-    key_words: str = Field(
+    article_classification: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Author-supplied keywords from after the abstract, comma-"
-            "separated. If not stated, return 'N/A'."
+            "Single best classification of this article: 'Field Study', "
+            "'Simulation Study', 'Review', 'Mixed (Field + Simulation)', "
+            "'Method / Model Paper', 'Machine Learning / Predictive Study', "
+            "'Case Study', or 'Other (specify)'. If multi-type, list both "
+            "separated by ' | '. Return 'NA', 'UNCERTAIN', or 'MULTIPLE' if "
+            "the article does not clearly fit."
+        ),
+    )
+    main_focus: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "Main comfort focus(es) of the article. Choose ALL that apply "
+            "from: 'Thermal Comfort', 'Outdoor Air Quality', 'Visual "
+            "Comfort', 'Acoustic Comfort', 'Multi-Sensory Comfort', "
+            "'Calibration / Assessment Tools', 'Other (specify)'. Separate "
+            "multiple values with ' | '. Return 'NA' or 'UNCERTAIN' if not "
+            "clear."
+        ),
+    )
+
+
+class BibliographicFields(BaseModel):
+    """Group A part 2 — bibliographic identifiers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "Full title of the article exactly as published. No truncation. "
+            "Return 'NA' or 'UNCERTAIN' if not resolvable."
+        ),
+    )
+    authors: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "All author names as listed (Last, First | Last, First). If "
+            "more than 6 authors, list first 6 then 'et al.'. Return 'NA' "
+            "or 'UNCERTAIN' if not resolvable."
         ),
     )
     year: str = Field(
         default=NOT_AVAILABLE,
-        description=(
-            "Year of publication as a 4-digit string (e.g. '2023'). If not stated, return 'N/A'."
-        ),
+        description="Four-digit publication year. Return 'NA' if not stated.",
     )
     journal: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Full official journal or conference name (e.g. 'Building and "
-            "Environment'). If not stated, return 'N/A'."
+            "Full journal name as published, or conference name if "
+            "proceedings. Return 'NA' if not stated."
         ),
     )
     doi: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Digital Object Identifier (e.g. '10.1016/j.buildenv.2023.110123'). "
-            "If not stated, return 'N/A'."
-        ),
-    )
-    researchers: str = Field(
-        default=NOT_AVAILABLE,
-        description=(
-            "All authors comma-separated, in order (e.g. 'Smith J, Lee K'). "
-            "If not stated, return 'N/A'."
+            "Full DOI with 'https://doi.org/' prefix, or ISBN, or other "
+            "unique identifier. Return 'NA' if not stated."
         ),
     )
 
 
 class StudyContextFields(BaseModel):
-    """Pass 1b — geographic and study-context information."""
+    """Group A part 3 — geographic and study-context information."""
 
     model_config = ConfigDict(extra="forbid")
 
     country: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Country where the research was conducted. If multiple, comma-"
-            "separated. If not stated, return 'N/A'."
+            "Country or countries where the study was conducted. Multi-"
+            "country studies use ' | ' separator. If a simulation has no "
+            "physical location, return 'NA'."
         ),
     )
     city: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "City or cities where the research was conducted "
-            "(e.g. 'Phoenix'). If not stated, return 'N/A'."
+            "City or cities where the study was conducted. Multi-city "
+            "studies use ' | ' separator. If no physical location, return "
+            "'NA'."
         ),
     )
     climate: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Climate classification. Prefer Köppen-Geiger code "
-            "(e.g. 'BWh', 'Csa'). Otherwise use the descriptive term "
-            "(e.g. 'hot-arid'). If not stated, return 'N/A'."
+            "Exact climate description stated in the article (Köppen-"
+            "Geiger code, descriptive term, or both). If multiple climates, "
+            "list all with ' | '. Return 'NA' if not stated."
         ),
     )
-    subjects_of_study: str = Field(
+    seasons: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Comfort domain(s) studied. Choose ALL that apply from this "
-            "exact list: 'Visual Comfort', 'Acoustic Comfort', 'Outdoor Air "
-            "Quality', 'Thermal Comfort'. Comma-separated. If none apply, "
-            "return 'N/A'."
+            "Exact season(s) or months studied (e.g., 'Summer | Winter', "
+            "'July-August'). If all seasons covered, 'All seasons'. For "
+            "reviews spanning multiple periods, write the range. Return "
+            "'NA' if not stated."
         ),
     )
-    seasons_of_study: str = Field(
+    urban_space_types: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Season(s) of measurements / surveys (e.g. 'summer', 'summer "
-            "and winter', 'July-September'). If not stated, return 'N/A'."
-        ),
-    )
-    spaces_studied: str = Field(
-        default=NOT_AVAILABLE,
-        description=(
-            "Type of urban space studied (e.g. 'outdoor plaza', 'urban "
-            "canyon', 'park', 'street'). If not stated, return 'N/A'."
+            "Exact types of outdoor spaces studied (e.g., 'street canyon "
+            "| park | university courtyard | public square'). Use the "
+            "article's own terminology. If simulation-only, describe the "
+            "simulated space and mark '(simulated)'. Return 'NA' if "
+            "unspecified."
         ),
     )
 
 
 class ParticipantsFields(BaseModel):
-    """Pass 1c — survey-taker information."""
+    """Group B — human-subject information (columns 13-18)."""
 
     model_config = ConfigDict(extra="forbid")
 
     age: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Age range, mean, or distribution of survey takers "
-            "(e.g. '25-55 years', 'mean 32.4'). If not stated, return 'N/A'."
+            "Age ranges, mean ages, or age group labels as stated "
+            "(e.g. '18-30 years (mean 24)', 'Young adults', 'Children "
+            "(6-12)'). If assumed for simulation, note '(assumed)'. Return "
+            "'NA' if no human subjects."
         ),
     )
     gender: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Gender distribution (e.g. '60% male, 40% female'). If not stated, return 'N/A'."
+            "Gender distribution as stated (e.g., '52% male, 48% female'). "
+            "If mixed without data, 'Mixed (unspecified ratio)'. If "
+            "assumed for simulation, note '(assumed)'. Return 'NA' if no "
+            "human subjects."
         ),
     )
     ethnicity: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Ethnic / national background of survey takers if reported. If "
-            "not stated, return 'N/A'."
-        ),
-    )
-    behaviours_activity: str = Field(
-        default=NOT_AVAILABLE,
-        description=(
-            "Behaviours and activity level. Prefer met values "
-            "(e.g. '1.2 met'). Otherwise describe qualitatively "
-            "(e.g. 'seated office work', 'walking'). If not stated, "
-            "return 'N/A'."
+            "Ethnicity, nationality, or participant category (e.g., "
+            "'Chinese university students', 'Local residents', 'Tourists "
+            "and residents'). Return 'NA' if no human subjects or not "
+            "reported."
         ),
     )
     clothing_level: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Clothing insulation level. Prefer clo values "
-            "(e.g. '0.5 clo'). Otherwise describe qualitatively "
-            "(e.g. 'summer attire'). If not stated, return 'N/A'."
+            "Both descriptive clothing AND clo values when available. "
+            "Format: '[description] ([clo value] clo)'. If assumed for "
+            "simulation, note '(assumed)'. Return 'NA' if no human "
+            "subjects."
+        ),
+    )
+    activity_during_exposure: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "What participants were doing at measurement / survey "
+            "(e.g., 'Walking at 1.2 m/s', 'Sitting on benches'). Multiple "
+            "activities separated by ' | '. If assumed for simulation "
+            "(e.g., 'walking pedestrian, 1.1 met'), note '(assumed)'. "
+            "Return 'NA' if no human subjects."
+        ),
+    )
+    activity_before_exposure: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "Activity up to 24 hours before exposure, only if explicitly "
+            "stated (e.g., 'participants seated for 15 min before survey', "
+            "'>=30 min outdoor exposure required'). Captures pre-"
+            "conditioning protocol. Return 'NA' if not reported."
         ),
     )
 
 
 class MeasurementsFields(BaseModel):
-    """Pass 1d — measurements, questionnaire details, KPIs."""
+    """Group C — environmental measurements (columns 19-20)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    numerical_variables: str = Field(
+    variables_quantitative: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Quantitative variables measured / calculated (Ta, RH, Tmrt, Tg, "
-            "Va, SR, PMV, PPD, UTCI, SET*, PET). Comma-separated. If none, "
-            "return 'N/A'."
+            "Numerical / physical variables measured or simulated, with "
+            "units. Preserve article abbreviations exactly. Separate with "
+            "' | '. Example: 'Air temperature (Ta, °C) | Relative humidity "
+            "(RH, %) | Wind speed (m/s) | Tmrt (°C) | PET (°C) | UTCI (°C) "
+            "| SVF'. Include physiological / index variables if numerically "
+            "reported. Return 'NA' if none."
         ),
     )
-    qualitative_variables: str = Field(
+    variables_qualitative: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Qualitative variables collected from survey takers (TSV, TCV, "
-            "thermal preference, thermal acceptability, visual / acoustic "
-            "ratings). Comma-separated. If none, return 'N/A'."
+            "Non-numerical / perceptual variables recorded, including vote "
+            "types and scales. Separate with ' | '. Examples: 'Thermal "
+            "Sensation Vote (TSV, ASHRAE 7-point scale: -3 to +3)', "
+            "'Thermal Preference Vote (TPV, McIntyre scale)', 'Sun/shade "
+            "preference', 'Visual glare assessment'. Return 'NA' if none."
         ),
     )
+
+
+class SubjectiveComfortFields(BaseModel):
+    """Group D — subjective comfort survey information (columns 21-23)."""
+
+    model_config = ConfigDict(extra="forbid")
+
     questionnaire_extent: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Number of people in the questionnaire / survey "
-            "(e.g. '120 participants', 'N=200'). If not stated, return 'N/A'."
+            "Total questionnaires distributed | valid responses | response "
+            "rate. Include survey sessions, locations, or rounds if stated. "
+            "Example: '950 questionnaires distributed; 872 valid (92% "
+            "response rate)'. Return 'NA' if no survey."
         ),
     )
-    questionning_time: str = Field(
+    survey_time: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "When and how often the questionnaire was administered "
-            "(e.g. 'every 15 minutes', 'morning and afternoon'). If not "
-            "stated, return 'N/A'."
+            "Exact time windows, hours, or temporal protocols. Include "
+            "seasonal context if stated. Example: '09:00-17:00 daily across "
+            "3 weeks in July-August'. Return 'NA' if no survey."
         ),
     )
     questionnaire_questions: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Brief summary of questionnaire topics / scales "
-            "(e.g. 'ASHRAE 7-point thermal sensation'). If not stated, "
-            "return 'N/A'."
+            "Types or categories of questions asked. If quoted verbatim in "
+            "the article, list them all separated by ' | '. Return 'NA' if "
+            "no survey."
         ),
     )
-    kpi: str = Field(
+
+
+class CalculatedIndexesFields(BaseModel):
+    """Group E — calculated comfort indexes / KPIs (column 24)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    calculated_indexes: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "KEY PERFORMANCE INDICATORS — calculated comfort indices "
-            "(PMV, PPD, UTCI, SET*, PET, WBGT). Comma-separated. If none, "
-            "return 'N/A'."
+            "Every explicitly named index, model output, or derived "
+            "indicator. For each: name | equation/formula if stated | "
+            "thresholds, neutral ranges, calibrated values if reported. "
+            "Example: 'PET (Physiological Equivalent Temperature) — "
+            "calculated via RayMan; neutral range 18-23°C | UTCI — derived "
+            "from ENVI-met outputs; stress categories applied'. Separate "
+            "multiple indexes with ' | '. Return 'NA' if none."
         ),
     )
 
 
 class StrategiesFields(BaseModel):
-    """Pass 1e — environmental and personal control strategies."""
+    """Group F — PECS: urban and personal control strategies (columns 25-28)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    urban_cooling_strategies: str = Field(
+    urban_cooling: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Urban-scale cooling strategies investigated (e.g. 'street "
-            "trees', 'green roofs', 'cool pavements'). If none, return 'N/A'."
+            "Urban-scale / design-level interventions to reduce heat or "
+            "improve summer comfort, only if explicitly studied, evaluated, "
+            "or recommended. Examples: 'vegetation and tree planting | "
+            "shading structures | high-albedo materials | water features | "
+            "canyon geometry optimization | green roofs / walls | permeable "
+            "pavements | wind corridor design'. Return 'NA' if not present."
         ),
     )
-    personal_cooling_strategies: str = Field(
+    personal_cooling: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Personal-scale cooling strategies investigated (e.g. 'handheld "
-            "fans', 'umbrellas'). If none, return 'N/A'."
+            "Individual-level cooling behaviours / adaptations, only if "
+            "explicitly reported or observed. Examples: 'shade-seeking | "
+            "clothing adjustment | hat/umbrella/sunglasses | cold drink | "
+            "personal fans / misting | reducing activity | timing activity | "
+            "indoor retreat'. Return 'NA' if not present."
         ),
     )
-    urban_heating_strategies: str = Field(
+    urban_heating: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Urban-scale heating strategies investigated (e.g. 'wind "
-            "shelters', 'thermal mass'). If none, return 'N/A'."
+            "Urban-scale strategies that preserve / enhance warmth in "
+            "winter, only if explicitly studied or recommended. Examples: "
+            "'solar access optimization | south-facing orientation | low-"
+            "rise or open urban form | dark / high-thermal-mass materials | "
+            "wind shelter design'. Return 'NA' if not present."
         ),
     )
-    personal_heating_strategies: str = Field(
+    personal_heating: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Personal-scale heating strategies investigated (e.g. 'heated "
-            "clothing', 'hot drinks'). If none, return 'N/A'."
+            "Individual-level heating behaviours / adaptations, only if "
+            "explicitly reported or observed. Examples: 'sun-seeking | "
+            "adding clothing layers | warm beverage | increasing activity "
+            "intensity | portable heaters or blankets | behavioural / "
+            "cultural acclimatization'. Return 'NA' if not present."
         ),
     )
 
 
-class ToolingFields(BaseModel):
-    """Pass 1f — modelling and simulation tools."""
+class ModelingFields(BaseModel):
+    """Group G — modeling / simulation (column 29)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    software_used: str = Field(
+    modeling_simulation: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Software, simulation tools, or statistical packages used "
-            "(ENVI-met, RayMan, SOLWEIG, ANSYS Fluent, OpenFOAM, SPSS, R, "
-            "MATLAB, Python). State if a native/custom tool was developed. "
-            "Comma-separated. If none, return 'N/A'."
+            "Combined summary of computational modeling / simulation, with "
+            "labelled sub-elements: SOFTWARE (name and version), PURPOSE, "
+            "INPUTS, OUTPUTS, CALIBRATION / VALIDATION, STATISTICAL / ML "
+            "METHODS. Format as pipe-separated flowing text with labels. "
+            "Example: 'SOFTWARE: ENVI-met 4.0 | RayMan 1.2 — PURPOSE: "
+            "microclimate simulation and PET calculation — INPUTS: Ta, RH, "
+            "WS, urban geometry, vegetation — OUTPUTS: PET, Tmrt — "
+            "VALIDATION: field measurements R²=0.91 — STATS: linear "
+            "regression'. Return 'NA' if no modeling."
+        ),
+    )
+
+
+class ReviewFields(BaseModel):
+    """Group H — review-study fields (columns 30-35)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    review_scope: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "For reviews only: topical, geographic, and temporal scope. "
+            "Example: 'Outdoor thermal comfort studies globally, 1995-2025, "
+            "focus on field surveys and simulation'. Return 'NA' if not a "
+            "review."
+        ),
+    )
+    number_of_studies_reviewed: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "For reviews only: exact number of papers included, or range "
+            "if given. Return 'NA' if not a review."
+        ),
+    )
+    themes_categories: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "For reviews only: main thematic groupings or classification "
+            "categories the review uses. Separate with ' | '. Return 'NA' "
+            "if not a review."
+        ),
+    )
+    methods_compared: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "For reviews only: specific methodologies, indices, tools, or "
+            "approaches compared across reviewed studies. Separate with "
+            "' | '. Return 'NA' if not a review."
+        ),
+    )
+    gaps_identified: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "For reviews only: research gaps, limitations, or future "
+            "directions explicitly stated. Use the article's own wording. "
+            "Return 'NA' if not a review."
+        ),
+    )
+    conclusions: str = Field(
+        default=NOT_AVAILABLE,
+        description=(
+            "For reviews only: main conclusions preserving the article's "
+            "own emphasis and language. Return 'NA' if not a review."
         ),
     )
 
@@ -273,175 +410,195 @@ class ToolingFields(BaseModel):
 class StructuredFields(BaseModel):
     """Aggregated container of every structured field for one article.
 
-    Produced by combining all batched passes (Bibliographic, StudyContext,
-    Participants, Measurements, Strategies, Tooling) into one object.
+    Produced by merging the output of every batch call. Kept as the
+    single object the orchestrator and tests consume so downstream code
+    stays unchanged.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    article_name: str = NOT_AVAILABLE
-    key_words: str = NOT_AVAILABLE
+    # Classification
+    article_classification: str = NOT_AVAILABLE
+    main_focus: str = NOT_AVAILABLE
+    # Bibliographic
+    title: str = NOT_AVAILABLE
+    authors: str = NOT_AVAILABLE
     year: str = NOT_AVAILABLE
     journal: str = NOT_AVAILABLE
     doi: str = NOT_AVAILABLE
-    researchers: str = NOT_AVAILABLE
+    # Study context
     country: str = NOT_AVAILABLE
     city: str = NOT_AVAILABLE
     climate: str = NOT_AVAILABLE
-    subjects_of_study: str = NOT_AVAILABLE
-    seasons_of_study: str = NOT_AVAILABLE
-    spaces_studied: str = NOT_AVAILABLE
+    seasons: str = NOT_AVAILABLE
+    urban_space_types: str = NOT_AVAILABLE
+    # Participants
     age: str = NOT_AVAILABLE
     gender: str = NOT_AVAILABLE
     ethnicity: str = NOT_AVAILABLE
-    behaviours_activity: str = NOT_AVAILABLE
     clothing_level: str = NOT_AVAILABLE
-    numerical_variables: str = NOT_AVAILABLE
-    qualitative_variables: str = NOT_AVAILABLE
+    activity_during_exposure: str = NOT_AVAILABLE
+    activity_before_exposure: str = NOT_AVAILABLE
+    # Measurements
+    variables_quantitative: str = NOT_AVAILABLE
+    variables_qualitative: str = NOT_AVAILABLE
+    # Subjective comfort
     questionnaire_extent: str = NOT_AVAILABLE
-    questionning_time: str = NOT_AVAILABLE
+    survey_time: str = NOT_AVAILABLE
     questionnaire_questions: str = NOT_AVAILABLE
-    kpi: str = NOT_AVAILABLE
-    urban_cooling_strategies: str = NOT_AVAILABLE
-    personal_cooling_strategies: str = NOT_AVAILABLE
-    urban_heating_strategies: str = NOT_AVAILABLE
-    personal_heating_strategies: str = NOT_AVAILABLE
-    software_used: str = NOT_AVAILABLE
+    # Indexes
+    calculated_indexes: str = NOT_AVAILABLE
+    # Strategies
+    urban_cooling: str = NOT_AVAILABLE
+    personal_cooling: str = NOT_AVAILABLE
+    urban_heating: str = NOT_AVAILABLE
+    personal_heating: str = NOT_AVAILABLE
+    # Modeling
+    modeling_simulation: str = NOT_AVAILABLE
+    # Review
+    review_scope: str = NOT_AVAILABLE
+    number_of_studies_reviewed: str = NOT_AVAILABLE
+    themes_categories: str = NOT_AVAILABLE
+    methods_compared: str = NOT_AVAILABLE
+    gaps_identified: str = NOT_AVAILABLE
+    conclusions: str = NOT_AVAILABLE
 
 
 class SynthesisFields(BaseModel):
-    """Summary fields the LLM writes by reading the whole article."""
+    """Group I — GMR fields, produced in a separate synthesis pass."""
 
     model_config = ConfigDict(extra="forbid")
 
     research_questions: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Research questions the article sets out to answer, as one "
-            "concise paragraph. If not stated, return 'N/A'."
+            "Explicit research questions stated in the article, or implied "
+            "questions extracted from stated objectives. Multiple questions "
+            "separated by ' | '."
         ),
     )
     key_goals: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Stated goals or objectives of the study, as one concise "
-            "paragraph. If not stated, return 'N/A'."
+            "Explicit aims, objectives, or purposes in the article's own "
+            "language. Multiple goals separated by ' | '."
         ),
     )
     methodology: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "One paragraph (3-6 sentences) summarising study design, "
-            "participants, instruments, and analysis approach."
+            "2-5 sentence description of overall methodology: design, "
+            "instruments, sample strategy, analysis approach. Synthesize "
+            "from methods section, not the abstract."
         ),
     )
-    notes: str = Field(
+    gmr_brief: str = Field(
         default=NOT_AVAILABLE,
         description=(
-            "Notable details, limitations, caveats, or future-work flags, "
-            "as one paragraph. If none, return 'N/A'."
-        ),
-    )
-    brief_double_click_to_see_all: str = Field(
-        default=NOT_AVAILABLE,
-        description=(
-            "One-paragraph executive summary covering scope, approach, and headline findings."
-        ),
-    )
-    g_m_r_brief: str = Field(
-        default=NOT_AVAILABLE,
-        description=(
-            "Goal-Method-Result brief: one flowing paragraph stating "
-            "(a) goals, (b) methodology, (c) headline results."
+            "ONE sentence, max 40 words, summarising Goal + Method + "
+            "Result. Format: '[Goal] using [method], finding that "
+            "[result].'"
         ),
     )
 
 
 class ArticleExtraction(BaseModel):
-    """Combined result of all extraction passes for one article."""
+    """Combined result of every extraction pass for one article."""
 
     structured: StructuredFields
     synthesis: SynthesisFields
 
 
+# Ordered list of the 39 Excel column headers, matching the exact order
+# required by the extraction spec.
 EXCEL_COLUMNS: tuple[str, ...] = (
-    "Article Name",
-    "Key Words",
+    "Article Classification",
+    "Main Focus",
+    "Title",
+    "Authors",
     "Year",
     "Journal",
-    "DOI",
-    "Researchers",
+    "DOI / Unique Identifier",
     "Country",
     "City",
     "Climate",
-    "Subjects of Study",
-    "Seasons of Study",
-    "Spaces Studied",
+    "Season(s)",
+    "Urban Space Types",
     "Age",
     "Gender",
-    "ethnicity",
-    "Behaviours Activity",
-    "Clothing Level",
-    "Numerical Variables",
-    "Qualitative Variables",
-    "Questionnare Extent",
-    "Questionning Time",
-    "Questionnare Questions",
-    "KPI",
+    "Ethnicity / Nationality / Participant Group",
+    "Clothing Level or Description",
+    "Activity During Exposure",
+    "Activity up to 24 Hours Before Exposure",
+    "Environmental Variables Measured: Quantitative",
+    "Environmental Variables Measured: Qualitative",
+    "Questionnaire Extent",
+    "Survey Time",
+    "Questionnaire Questions",
+    "Calculated Indexes",
     "Urban Cooling Strategies",
     "Personal Cooling Strategies",
     "Urban Heating Strategies",
     "Personal Heating Strategies",
-    "Software Used (State if Native)",
-    "Research Questions",
+    "Modeling / Simulation",
+    "Review Scope",
+    "Number of Studies Reviewed",
+    "Themes / Categories",
+    "Methods Compared",
+    "Gaps Identified",
+    "Conclusions",
+    "Key Research Questions",
     "Key Goals",
     "Methodology",
-    "Notes",
-    "Brief Double Click to See All",
-    "G-M-R Brief",
+    "GMR Brief",
 )
 
 
 COLUMN_TO_FIELD: dict[str, str] = {
-    "Article Name": "article_name",
-    "Key Words": "key_words",
+    "Article Classification": "article_classification",
+    "Main Focus": "main_focus",
+    "Title": "title",
+    "Authors": "authors",
     "Year": "year",
     "Journal": "journal",
-    "DOI": "doi",
-    "Researchers": "researchers",
+    "DOI / Unique Identifier": "doi",
     "Country": "country",
     "City": "city",
     "Climate": "climate",
-    "Subjects of Study": "subjects_of_study",
-    "Seasons of Study": "seasons_of_study",
-    "Spaces Studied": "spaces_studied",
+    "Season(s)": "seasons",
+    "Urban Space Types": "urban_space_types",
     "Age": "age",
     "Gender": "gender",
-    "ethnicity": "ethnicity",
-    "Behaviours Activity": "behaviours_activity",
-    "Clothing Level": "clothing_level",
-    "Numerical Variables": "numerical_variables",
-    "Qualitative Variables": "qualitative_variables",
-    "Questionnare Extent": "questionnaire_extent",
-    "Questionning Time": "questionning_time",
-    "Questionnare Questions": "questionnaire_questions",
-    "KPI": "kpi",
-    "Urban Cooling Strategies": "urban_cooling_strategies",
-    "Personal Cooling Strategies": "personal_cooling_strategies",
-    "Urban Heating Strategies": "urban_heating_strategies",
-    "Personal Heating Strategies": "personal_heating_strategies",
-    "Software Used (State if Native)": "software_used",
-    "Research Questions": "research_questions",
+    "Ethnicity / Nationality / Participant Group": "ethnicity",
+    "Clothing Level or Description": "clothing_level",
+    "Activity During Exposure": "activity_during_exposure",
+    "Activity up to 24 Hours Before Exposure": "activity_before_exposure",
+    "Environmental Variables Measured: Quantitative": "variables_quantitative",
+    "Environmental Variables Measured: Qualitative": "variables_qualitative",
+    "Questionnaire Extent": "questionnaire_extent",
+    "Survey Time": "survey_time",
+    "Questionnaire Questions": "questionnaire_questions",
+    "Calculated Indexes": "calculated_indexes",
+    "Urban Cooling Strategies": "urban_cooling",
+    "Personal Cooling Strategies": "personal_cooling",
+    "Urban Heating Strategies": "urban_heating",
+    "Personal Heating Strategies": "personal_heating",
+    "Modeling / Simulation": "modeling_simulation",
+    "Review Scope": "review_scope",
+    "Number of Studies Reviewed": "number_of_studies_reviewed",
+    "Themes / Categories": "themes_categories",
+    "Methods Compared": "methods_compared",
+    "Gaps Identified": "gaps_identified",
+    "Conclusions": "conclusions",
+    "Key Research Questions": "research_questions",
     "Key Goals": "key_goals",
     "Methodology": "methodology",
-    "Notes": "notes",
-    "Brief Double Click to See All": "brief_double_click_to_see_all",
-    "G-M-R Brief": "g_m_r_brief",
+    "GMR Brief": "gmr_brief",
 }
 
 
 def extraction_to_row(extraction: ArticleExtraction) -> list[str]:
-    """Flatten an :class:`ArticleExtraction` to a row for the Excel file."""
+    """Flatten an :class:`ArticleExtraction` into a row for the Excel file."""
     combined: dict[str, str] = {
         **extraction.structured.model_dump(),
         **extraction.synthesis.model_dump(),

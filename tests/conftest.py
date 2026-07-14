@@ -1,10 +1,4 @@
-"""Shared pytest fixtures.
-
-Anything defined here is automatically available in every test in the
-``tests/`` package without explicit import. We keep fixtures here for
-two reasons: tests stay short and focused, and the cost of building a
-fixture (e.g. writing a workbook to disk) is paid once per scope.
-"""
+"""Shared pytest fixtures."""
 
 from __future__ import annotations
 
@@ -19,15 +13,11 @@ from extractkit.schemas import EXCEL_COLUMNS
 
 @pytest.fixture
 def template_xlsx(tmp_path: Path) -> Path:
-    """Create a minimal Excel template with the canonical 33 headers.
-
-    Yields the path to a freshly created workbook that lives only for
-    the duration of the test (``tmp_path`` is cleaned up automatically).
-    """
+    """Create a minimal Excel template with the canonical headers."""
     path = tmp_path / "template.xlsx"
     workbook = Workbook()
     worksheet = workbook.active
-    assert worksheet is not None  # narrows the optional type for mypy
+    assert worksheet is not None
     worksheet.append(list(EXCEL_COLUMNS))
     workbook.save(path)
     return path
@@ -35,20 +25,13 @@ def template_xlsx(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def sample_row() -> list[str]:
-    """A plausible row of extracted values aligned to ``EXCEL_COLUMNS``.
-
-    Real LLM output will have varied content; these placeholders just
-    let us verify the writer puts values in the right columns.
-    """
+    """A plausible row of extracted values aligned to ``EXCEL_COLUMNS``."""
     return [f"value-{i}" for i in range(len(EXCEL_COLUMNS))]
 
 
 @pytest.fixture
 def fake_article_text() -> str:
-    """A short stand-in for a real article body.
-
-    Long enough to exercise truncation guards without bloating tests.
-    """
+    """A short stand-in for a real article body."""
     return (
         "Title: A Study of Outdoor Thermal Comfort\n"
         "Authors: Smith, Lee\n"
@@ -60,39 +43,43 @@ def fake_article_text() -> str:
 
 @pytest.fixture
 def structured_extraction_dict() -> dict[str, Any]:
-    """Plausible structured-pass output as plain Python data.
-
-    Used by the LLM-mock tests to simulate what OpenAI's parsed response
-    would look like for ``StructuredFields``.
-    """
+    """Plausible structured-pass output as plain Python data."""
     return {
-        "article_name": "A Study of Outdoor Thermal Comfort",
-        "key_words": "thermal comfort, outdoor, survey",
+        "article_classification": "Field Study",
+        "main_focus": "Thermal Comfort",
+        "title": "A Study of Outdoor Thermal Comfort",
+        "authors": "Smith, John | Lee, Kim",
         "year": "2023",
         "journal": "Building and Environment",
-        "researchers": "Smith, Lee",
+        "doi": "https://doi.org/10.1016/j.buildenv.2023.example",
         "country": "USA",
         "city": "Phoenix",
-        "climate": "BWh",
-        "subjects_of_study": "120 office workers",
-        "seasons_of_study": "summer",
-        "spaces_studied": "outdoor plaza",
-        "age": "25-55",
-        "gender": "60% male",
-        "ethnicity": "",
-        "behaviours_activity": "1.2 met",
-        "clothing_level": "0.5 clo",
-        "numerical_variables": "Ta, RH, Tmrt",
-        "qualitative_variables": "thermal sensation votes",
-        "questionnaire_extent": "20 items",
-        "questionning_time": "every 15 minutes",
-        "questionnaire_questions": "ASHRAE-55 7-point scale",
-        "kpi": "PMV, UTCI",
-        "urban_cooling_strategies": "tree canopy",
-        "personal_cooling_strategies": "handheld fans",
-        "urban_heating_strategies": "",
-        "personal_heating_strategies": "",
-        "software_used": "RayMan",
+        "climate": "BWh (hot arid)",
+        "seasons": "Summer (July-August)",
+        "urban_space_types": "outdoor plaza | street canyon",
+        "age": "18-55 years (mean 34)",
+        "gender": "60% male, 40% female",
+        "ethnicity": "NA",
+        "clothing_level": "Light summer clothing (0.5 clo)",
+        "activity_during_exposure": "Standing at survey points",
+        "activity_before_exposure": "NA",
+        "variables_quantitative": "Ta (°C) | RH (%) | Tmrt (°C)",
+        "variables_qualitative": "TSV (ASHRAE 7-point scale: -3 to +3)",
+        "questionnaire_extent": "120 valid responses",
+        "survey_time": "09:00-17:00 daily",
+        "questionnaire_questions": "ASHRAE thermal sensation",
+        "calculated_indexes": "PMV | UTCI",
+        "urban_cooling": "tree canopy",
+        "personal_cooling": "handheld fans",
+        "urban_heating": "NA",
+        "personal_heating": "NA",
+        "modeling_simulation": "NA",
+        "review_scope": "NA",
+        "number_of_studies_reviewed": "NA",
+        "themes_categories": "NA",
+        "methods_compared": "NA",
+        "gaps_identified": "NA",
+        "conclusions": "NA",
     }
 
 
@@ -103,11 +90,9 @@ def synthesis_extraction_dict() -> dict[str, Any]:
         "research_questions": "How effective are urban cooling strategies?",
         "key_goals": "Quantify thermal comfort improvement.",
         "methodology": "Field survey combined with microclimate measurements.",
-        "notes": "Sample limited to one city.",
-        "brief_double_click_to_see_all": "Outdoor thermal comfort study in Phoenix.",
-        "g_m_r_brief": (
-            "Goal: assess outdoor thermal comfort. Method: 120-participant "
-            "field study. Result: tree canopy and handheld fans both "
-            "reduced thermal stress."
+        "gmr_brief": (
+            "Evaluate outdoor thermal comfort in Phoenix using a 120-"
+            "participant field survey, finding that tree canopies "
+            "reduced PET by up to 5°C."
         ),
     }
