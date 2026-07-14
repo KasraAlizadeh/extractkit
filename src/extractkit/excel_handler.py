@@ -19,6 +19,7 @@ from openpyxl import Workbook, load_workbook
 from extractkit.exceptions import ExcelError
 from extractkit.schemas import EXCEL_COLUMNS
 
+
 # openpyxl rejects any control character other than tab (\x09), line feed
 # (\x0a), and carriage return (\x0d) — it raises IllegalCharacterError.
 # LLM output sometimes contains stray control characters (vertical tabs,
@@ -45,7 +46,7 @@ def _sanitize_for_excel(value: str) -> str:
     return cleaned[:32767]
 
 
-def read_headers(template_path: Path) -> list[str]:
+def read_column_headers(template_path: Path) -> list[str]:
     """Return the header row of the template workbook.
 
     Args:
@@ -55,11 +56,11 @@ def read_headers(template_path: Path) -> list[str]:
         List of header strings from row 1.
 
     Raises:
-        ExcelError: If the file cannot be opened or has no header row.
-        FileNotFoundError: If the template does not exist.
+        ExcelError: If the file does not exist, cannot be opened, or
+            has no header row.
     """
     if not template_path.exists():
-        raise FileNotFoundError(f"Template not found: {template_path}")
+        raise ExcelError(f"Template not found: {template_path}")
 
     try:
         workbook = load_workbook(template_path, read_only=True)
@@ -80,6 +81,39 @@ def read_headers(template_path: Path) -> list[str]:
         workbook.close()
 
 
+def count_data_rows(output_path: Path) -> int:
+    """Return the number of data rows (excluding the header) in a workbook.
+
+    Zero if the file does not exist, is empty, or contains only the
+    header row.
+
+    Args:
+        output_path: Location of the workbook.
+
+    Returns:
+        Count of rows below the header row.
+
+    Raises:
+        ExcelError: If the workbook exists but cannot be opened.
+    """
+    if not output_path.exists():
+        return 0
+
+    try:
+        workbook = load_workbook(output_path, read_only=True)
+    except Exception as exc:
+        raise ExcelError(f"Could not open workbook: {exc}") from exc
+
+    try:
+        worksheet = workbook.active
+        if worksheet is None:
+            return 0
+        total_rows = worksheet.max_row or 0
+        return max(0, total_rows - 1)  # subtract the header row
+    finally:
+        workbook.close()
+
+
 def validate_headers(template_path: Path) -> None:
     """Confirm the template headers match ``EXCEL_COLUMNS`` exactly.
 
@@ -92,7 +126,7 @@ def validate_headers(template_path: Path) -> None:
     Raises:
         ExcelError: If the header row does not match ``EXCEL_COLUMNS``.
     """
-    actual = read_headers(template_path)
+    actual = read_column_headers(template_path)
     expected = list(EXCEL_COLUMNS)
     if actual != expected:
         missing = [h for h in expected if h not in actual]
