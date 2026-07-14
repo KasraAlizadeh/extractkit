@@ -46,11 +46,42 @@ def _sanitize_for_excel(value: str) -> str:
     return cleaned[:32767]
 
 
-def read_column_headers(template_path: Path) -> list[str]:
+def _get_worksheet(workbook: Workbook, sheet: str | None):
+    """Return the worksheet identified by ``sheet`` (or the active one).
+
+    Args:
+        workbook: An open ``openpyxl`` workbook.
+        sheet: Sheet name to select; ``None`` selects the active sheet.
+
+    Returns:
+        The requested worksheet.
+
+    Raises:
+        ExcelError: If the sheet name is not present in the workbook,
+            or the workbook has no active sheet.
+    """
+    if sheet is not None:
+        if sheet not in workbook.sheetnames:
+            raise ExcelError(
+                f"Sheet '{sheet}' not found in workbook. "
+                f"Available: {workbook.sheetnames}"
+            )
+        return workbook[sheet]
+    worksheet = workbook.active
+    if worksheet is None:
+        raise ExcelError("Workbook has no active sheet")
+    return worksheet
+
+
+def read_column_headers(
+    template_path: Path, sheet: str | None = None
+) -> list[str]:
     """Return the header row of the template workbook.
 
     Args:
         template_path: Location of the template `.xlsx` file.
+        sheet: Optional sheet name; when omitted, the active sheet is
+            used.
 
     Returns:
         List of header strings from row 1.
@@ -68,20 +99,16 @@ def read_column_headers(template_path: Path) -> list[str]:
         raise ExcelError(f"Could not open template: {exc}") from exc
 
     try:
-        worksheet = workbook.active
-        if worksheet is None:
-            raise ExcelError("Template has no active sheet")
-
+        worksheet = _get_worksheet(workbook, sheet)
         header_row = next(worksheet.iter_rows(values_only=True), None)
         if header_row is None:
             raise ExcelError("Template has no header row")
-
         return [str(cell) if cell is not None else "" for cell in header_row]
     finally:
         workbook.close()
 
 
-def count_data_rows(output_path: Path) -> int:
+def count_data_rows(output_path: Path, sheet: str | None = None) -> int:
     """Return the number of data rows (excluding the header) in a workbook.
 
     Zero if the file does not exist, is empty, or contains only the
@@ -89,12 +116,15 @@ def count_data_rows(output_path: Path) -> int:
 
     Args:
         output_path: Location of the workbook.
+        sheet: Optional sheet name; when omitted, the active sheet is
+            used.
 
     Returns:
         Count of rows below the header row.
 
     Raises:
-        ExcelError: If the workbook exists but cannot be opened.
+        ExcelError: If the workbook exists but cannot be opened, or the
+            requested sheet is not present.
     """
     if not output_path.exists():
         return 0
@@ -105,16 +135,22 @@ def count_data_rows(output_path: Path) -> int:
         raise ExcelError(f"Could not open workbook: {exc}") from exc
 
     try:
-        worksheet = workbook.active
-        if worksheet is None:
-            return 0
+        try:
+            worksheet = _get_worksheet(workbook, sheet)
+        except ExcelError:
+            # Missing active sheet on an empty file → zero data rows.
+            if sheet is None:
+                return 0
+            raise
         total_rows = worksheet.max_row or 0
         return max(0, total_rows - 1)  # subtract the header row
     finally:
         workbook.close()
 
 
-def validate_headers(template_path: Path) -> None:
+def validate_headers(
+    template_path: Path, sheet: str | None = None
+) -> None:
     """Confirm the template headers match ``EXCEL_COLUMNS`` exactly.
 
     A mismatch means the template is out of date and would silently
@@ -122,11 +158,13 @@ def validate_headers(template_path: Path) -> None:
 
     Args:
         template_path: Location of the template file to check.
+        sheet: Optional sheet name; when omitted, the active sheet is
+            used.
 
     Raises:
         ExcelError: If the header row does not match ``EXCEL_COLUMNS``.
     """
-    actual = read_column_headers(template_path)
+    actual = read_column_headers(template_path, sheet)
     expected = list(EXCEL_COLUMNS)
     if actual != expected:
         missing = [h for h in expected if h not in actual]
@@ -148,6 +186,7 @@ def append_row(
     template_path: Path,
     output_path: Path,
     row: list[str],
+    sheet: str | None = None,
 ) -> None:
     """Append one row to the output workbook, atomically.
 
@@ -162,6 +201,8 @@ def append_row(
             output on the first write).
         output_path: Destination file for the appended row.
         row: Values to append, aligned to ``EXCEL_COLUMNS`` order.
+        sheet: Optional sheet name; when omitted, the active sheet is
+            used.
 
     Raises:
         ExcelError: If reading or writing the workbook fails.
@@ -176,9 +217,7 @@ def append_row(
         raise ExcelError(f"Could not open output workbook: {exc}") from exc
 
     try:
-        worksheet = workbook.active
-        if worksheet is None:
-            raise ExcelError("Workbook has no active sheet")
+        worksheet = _get_worksheet(workbook, sheet)
 
         # Sanitize each cell so a single control character in LLM output
         # cannot abort the whole write.
